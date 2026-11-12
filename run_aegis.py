@@ -7,15 +7,6 @@ import bot
 
 
 async def run():
-    for name in ('SITE_USERNAME', 'SITE_PASSWORD'):
-        value = bot.required_env(name)
-        if value in bot.SITE_URL:
-            raise RuntimeError(
-                f'{name} overlaps the site URL. Update the site credential and '
-                'its GitHub secret before running; secret substitution could '
-                'otherwise alter navigation. The value has not been logged.'
-            )
-
     bot.PASS_SECONDS = int(os.getenv('PASS_SECONDS', '1200'))
     original_instructions = bot.make_instructions
 
