@@ -11,7 +11,7 @@ async def main():
 
     browser = Browser(
         headless=True,
-        allowed_domains=["YOUR_WEBSITE_DOMAIN.COM"],
+        allowed_domains=["framer.com"],
     )
 
     # Keeps credentials hidden from the AI model and terminal logs
@@ -21,7 +21,7 @@ async def main():
     }
 
     task_instructions = """
-    1. Navigate to https://YOUR_WEBSITE_URL_HERE.
+    1. Navigate to https://sp1der.framer.photos.
     2. If you see a login screen, enter x_username into the username/email field, enter x_password into the password field, and click Log In.
     3. Once logged in, look for any new, unread user messages or support tickets in the inbox/chat.
     4. If there are no new messages, stop immediately and finish the task.
