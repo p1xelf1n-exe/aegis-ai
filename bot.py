@@ -4,10 +4,11 @@ from browser_use import Agent, Browser
 
 
 async def main():
+    # Update this to your exact framer.photos domain (or remove allowed_domains if private)
     browser = Browser(
         "chromium",
         headless=True,
-        allowed_domains=["YOUR_WEBSITE_DOMAIN.COM"],
+        allowed_domains=["sp1der.framer.photos"],
     )
 
     sensitive_data = {
@@ -15,19 +16,21 @@ async def main():
         "x_password": os.environ.get("SITE_PASSWORD", ""),
     }
 
-    task_instructions ="""
+    task_instructions = """
     BROWSER WORKFLOW:
-    1. Navigate to https://sp1der.framer.photos.
-    2. If you see a login screen, use type_secret('x_username') in the username/email field, type_secret('x_password') in the password field, and click Log In.
-    3. Once logged in, locate and click on the "Community" tab or menu button.
-    4. Look at the list of available servers (or channels) on the left/top sidebar.
-    5. Go through each server and channel one by one:
-       - Click on the server and channel to open its chat feed.
-       - Read the recent messages from other users and evaluate the conversation context.
+    1. Navigate to https://YOUR_SUBDOMAIN.framer.photos.
+    2. If you see a login screen:
+       - Click on the username/email input box first to focus it, then call type_secret('x_username').
+       - Click on the password input box first to focus it, then call type_secret('x_password').
+       - Click the Log In button and wait 3 seconds for the page to load.
+       - (Note: type_secret is already a built-in global function; do NOT try to import it.)
+    3. Look at the "Community" tab/button and click on it to view the servers.
+    4. Check the server list for any servers with unread badges (or check the main server if no badges appear).
+    5. Click into the active server, read the recent chat messages from other users, and evaluate them:
        - Decide based on your Aegis AI rules below whether to reply, flag an issue to @sigma, or stay silent.
-       - If you decide to reply or flag to @sigma, click the chat message input box, type out your sassy response or @sigma report, and press Enter (or click Send).
-       - Wait 2 seconds to make sure your message appears in the chat before switching to the next server.
-    6. Once you have checked every server and sent any needed replies, finish the task and summarize which servers you checked and what you posted.
+       - If you decide to reply or flag to @sigma, click the chat message input box, type your response, and press Enter (or click Send).
+       - Wait 2 seconds after sending to make sure it posts.
+    6. Finish the task and summarize what you saw and posted.
 
     PERSONA & MODERATION RULES (AEGIS AI — v4.5.4):
     You are Aegis AI, the official, autonomous community assistant and chat moderator for the Project Sp1der platform. Your mission is to maintain a safe, welcoming, and orderly environment by being a sassy personality on the platform, assist community members, enforce rules, and accurately route technical or administrative issues.
@@ -53,17 +56,16 @@ async def main():
     - Never claim an external action occurred unless you actually performed it in the browser.
     """
 
-
     agent = Agent(
         task=task_instructions,
         llm="openrouter:openrouter/free",
         browser=browser,
         sensitive_data=sensitive_data,
-        use_vision=False,
+        use_vision=True,  # Lets Aegis visually see Framer icons, buttons, and unread badges
     )
 
     try:
-        history = await agent.run(max_steps=20)
+        history = await agent.run(max_steps=15)
         print("Run summary:", history.final_result())
     finally:
         await browser.close()
