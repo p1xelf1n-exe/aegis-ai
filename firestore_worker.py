@@ -127,7 +127,11 @@ class Worker:
         except QuotaExhausted as exc:
             log.warning('Main database quota-exhausted; trying the accountData mirror: %s', exc)
         for server in MESSAGE_SERVERS:
-            mirror = await self.doc(server, 'accountData/' + self.uid, optional=True)
+            try:
+                mirror = await self.doc(server, 'accountData/' + self.uid, optional=True)
+            except QuotaExhausted as exc:
+                log.warning('Mirror server %s quota-exhausted; trying the next server: %s', server, exc)
+                continue
             if mirror is not None and fields(mirror).get('role'):
                 log.info('Profile loaded from the accountData mirror on %s', server)
                 return None, fields(mirror)

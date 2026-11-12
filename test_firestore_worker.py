@@ -46,6 +46,8 @@ class WorkerTests(unittest.TestCase):
                 return httpx.Response(429, json=QUOTA_BODY)
             if request.method == 'GET' and 'accountData/uid1' in url:
                 if 'database-1-ec196' in url:
+                    return httpx.Response(429, json=QUOTA_BODY)  # first mirror server quota-exhausted too
+                if 'database-3-9462a' in url:
                     return httpx.Response(200, json={'name': url, 'fields': {'role': {'stringValue': 'aegis'}, 'tier': {'stringValue': 'free'}}})
                 return httpx.Response(404, json={})
             return httpx.Response(200, json={})
