@@ -5,6 +5,7 @@ import signal
 import time
 from pathlib import Path
 
+import httpx
 from browser_use import Agent, Browser
 
 
@@ -142,7 +143,44 @@ conversation contents in the operational status.
 """.strip()
 
 
+def install_groq_error_logging() -> None:
+    original_send = httpx.AsyncClient.send
+    if getattr(original_send, "_aegis_diagnostics", False):
+        return
+
+    async def send_with_diagnostics(self, request, *args, **kwargs):
+        response = await original_send(self, request, *args, **kwargs)
+        if request.url.host == "api.groq.com" and response.status_code >= 400:
+            try:
+                await response.aread()
+                payload = response.json()
+                error = payload.get("error", {})
+                if isinstance(error, dict):
+                    details = {
+                        key: error.get(key)
+                        for key in ("message", "type", "code", "param")
+                        if error.get(key) is not None
+                    }
+                else:
+                    details = {"message": str(error)}
+                text = str(details)
+            except Exception:
+                text = "Could not read Groq's JSON error response."
+
+            for name in ("GROQ_API_KEY", "SITE_USERNAME", "SITE_PASSWORD"):
+                secret = os.getenv(name, "")
+                if secret:
+                    text = text.replace(secret, "[REDACTED]")
+
+            log.error("GROQ HTTP %s: %s", response.status_code, text[:2000])
+        return response
+
+    send_with_diagnostics._aegis_diagnostics = True
+    httpx.AsyncClient.send = send_with_diagnostics
+
+
 async def main() -> None:
+    install_groq_error_logging()
     required_env("GROQ_API_KEY")
     username = required_env("SITE_USERNAME")
     password = required_env("SITE_PASSWORD")
