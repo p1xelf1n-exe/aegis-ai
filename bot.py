@@ -1,17 +1,14 @@
 import os
 import asyncio
-from browser_use import Agent, Browser, ChatOpenRouter
+from browser_use import Agent, Browser
 
 
 async def main():
-    llm = ChatOpenRouter(
-        model="openrouter/free",
-        api_key=os.environ.get("OPENROUTER_API_KEY"),
-    )
-
+    # Launches local headless Chromium on the GitHub Actions server
     browser = Browser(
+        "chromium",
         headless=True,
-        allowed_domains=["framer.com"],
+        allowed_domains=["YOUR_WEBSITE_DOMAIN.COM"],
     )
 
     # Keeps credentials hidden from the AI model and terminal logs
@@ -21,8 +18,8 @@ async def main():
     }
 
     task_instructions = """
-    1. Navigate to https://sp1der.framer.photos.
-    2. If you see a login screen, enter x_username into the username/email field, enter x_password into the password field, and click Log In.
+    1. Navigate to https://YOUR_WEBSITE_URL_HERE.
+    2. If you see a login screen, use type_secret('x_username') in the username/email field, type_secret('x_password') in the password field, and click Log In.
     3. Once logged in, look for any new, unread user messages or support tickets in the inbox/chat.
     4. If there are no new messages, stop immediately and finish the task.
     5. For each unread message, read it carefully and decide:
@@ -35,17 +32,17 @@ async def main():
     - Never guess or make up policies not listed above.
     """
 
+    # Automatically reads OPENROUTER_API_KEY from environment
     agent = Agent(
         task=task_instructions,
-        llm=llm,
+        llm="openrouter:openrouter/free",
         browser=browser,
         sensitive_data=sensitive_data,
         use_vision=False,
-        max_steps=20,
     )
 
     try:
-        history = await agent.run()
+        history = await agent.run(max_steps=20)
         print("Run summary:", history.final_result())
     finally:
         await browser.close()
