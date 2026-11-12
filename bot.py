@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 from browser_use import Agent, Browser
+from pydantic_ai.models.groq import GroqModel
 
 
 ROOT = Path(__file__).resolve().parent
@@ -186,8 +187,10 @@ async def main() -> None:
     password = required_env("SITE_PASSWORD")
     model = required_env("GROQ_MODEL")
 
-    if not model.startswith("groq:"):
-        model = f"groq:{model}"
+    llm = GroqModel(
+        model.removeprefix("groq:"),
+        settings={"max_tokens": 8192},
+    )
 
     if SESSION_SECONDS <= 0 or POLL_SECONDS < 5:
         raise RuntimeError(
@@ -223,7 +226,7 @@ async def main() -> None:
 
     agent = Agent(
         task=BOOTSTRAP_TASK,
-        llm=model,
+        llm=llm,
         browser=browser,
         sensitive_data={
             SITE_URL: {
