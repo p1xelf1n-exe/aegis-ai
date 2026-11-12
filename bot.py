@@ -241,7 +241,7 @@ async def main() -> None:
                 log.exception("Agent exception. Ending session.")
                 raise
 
-                          status = getattr(result, "status", "unknown")
+            status = getattr(result, "status", "unknown")
             success = result.is_successful()
             errors = result.errors()
             error = getattr(result, "error", None)
