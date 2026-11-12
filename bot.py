@@ -189,7 +189,11 @@ async def main() -> None:
 
     llm = GroqModel(
         model.removeprefix("groq:"),
-        settings={"max_tokens": 8192},
+        settings={
+            "max_tokens": 8192,
+            "parallel_tool_calls": False,
+            "temperature": 0,
+        },
     )
 
     if SESSION_SECONDS <= 0 or POLL_SECONDS < 5:
