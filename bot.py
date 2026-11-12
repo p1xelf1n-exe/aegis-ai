@@ -59,10 +59,11 @@ async def main():
     # Uses Groq's free tier (up to 1,000 - 14,400 requests/day)
     agent = Agent(
         task=task_instructions,
-        llm="groq:llama-3.3-70b-versatile",
+        llm="groq:openai/gpt-oss-120b",
         browser=browser,
         sensitive_data=sensitive_data,
     )
+
 
     try:
         history = await agent.run(max_steps=15)
