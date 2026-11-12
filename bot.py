@@ -29,4 +29,4 @@ async def main():
        - Decide based on your Aegis AI rules below whether to reply, flag an issue to @sigma, or stay silent.
        - If you decide to reply or flag to @sigma, click the chat message input box, type your response, and press Enter (or click Send).
        - Wait 2 seconds after sending to make sure it posts.
-    7. Finish the task and summarize what you saw and posted.
+    7. Finish the task and summarize what you saw and posted."""
