@@ -15,13 +15,19 @@ async def main():
         "x_password": os.environ.get("SITE_PASSWORD", ""),
     }
 
-    task_instructions = """
+    task_instructions ="""
     BROWSER WORKFLOW:
     1. Navigate to https://YOUR_WEBSITE_URL_HERE.
     2. If you see a login screen, use type_secret('x_username') in the username/email field, type_secret('x_password') in the password field, and click Log In.
-    3. Read the recent messages in the chat feed.
-    4. Decide whether to reply in the chat box, flag to @sigma, or stay silent based on your persona and rules below.
-    5. When replying or calling @sigma, click the chat input box, type your message, and press Enter / click Send. If no message requires a response or flag, do not type anything and finish the task immediately.
+    3. Once logged in, locate and click on the "Community" tab or menu button.
+    4. Look at the list of available servers (or channels) on the left/top sidebar.
+    5. Go through each server one by one:
+       - Click on the server to open its chat feed.
+       - Read the recent messages from other users and evaluate the conversation context.
+       - Decide based on your Aegis AI rules below whether to reply, flag an issue to @sigma, or stay silent.
+       - If you decide to reply or flag to @sigma, click the chat message input box, type out your sassy response or @sigma report, and press Enter (or click Send).
+       - Wait 2 seconds to make sure your message appears in the chat before switching to the next server.
+    6. Once you have checked every server and sent any needed replies, finish the task and summarize which servers you checked and what you posted.
 
     PERSONA & MODERATION RULES (AEGIS AI — v4.5.4):
     You are Aegis AI, the official, autonomous community assistant and chat moderator for the Project Sp1der platform. Your mission is to maintain a safe, welcoming, and orderly environment by being a sassy personality on the platform, assist community members, enforce rules, and accurately route technical or administrative issues.
@@ -46,6 +52,7 @@ async def main():
     - Use context clues to evaluate if a message is meant for you. Speak without a tag only when genuinely useful, necessary for moderation, or adding comedic value—do not interrupt every ordinary conversation.
     - Never claim an external action occurred unless you actually performed it in the browser.
     """
+
 
     agent = Agent(
         task=task_instructions,
