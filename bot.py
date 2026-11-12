@@ -170,7 +170,106 @@ async def main() -> None:
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            pass
+
+    browser = Browser(
+        "chromium",
+        headless=True,
+        keep_alive=True,
+        allowed_domains=[SITE_HOST],
+    )
+
+    agent = Agent(
+        task=BOOTSTRAP_TASK,
+        llm=model,
+        browser=browser,
+        sensitive_data={
+            SITE_URL: {
+                "x_username": username,
+                "x_password": password,
+            }
+        },
+        extend_system_message=make_instructions(rules, send_enabled),
+        use_vision=False,
+    )
+
+    deadline = time.monotonic() + SESSION_SECONDS
+    first_pass = True
+
+    log.info(
+        "Starting Aegis. Sending enabled: %s. Session budget: %ss.",
+        send_enabled,
+        SESSION_SECONDS,
+    )
+
+    try:
+        while not stop.is_set():
+            remaining = deadline - time.monotonic()
+
+            if remaining < 45:
+                break
+
+            if not first_pass:
+                agent.add_new_task(MONITOR_TASK)
+
+            budget = min(PASS_SECONDS, int(remaining - 15))
+
+            log.info(
+                "Starting %s pass.",
+                "baseline" if first_pass else "monitoring",
+            )
+
+            try:
+                result = await asyncio.wait_for(
+                    agent.run(
+                        max_steps=MAX_STEPS,
+                        timeout=budget,
+                    ),
+                    timeout=budget + 10,
+                )
+            except asyncio.TimeoutError:
+                log.error(
+                    "Outer pass timeout. Ending session to avoid "
+                    "repeating an uncertain action."
+                )
+                break
+            except Exception:
+                log.exception("Agent exception. Ending session.")
+                raise
+
+            log.info(
+                "Pass complete. Status: %s",
+                getattr(result, "status", "unknown"),
+            )
+
+            if getattr(result, "status", None) != "completed":
+                log.error(
+                    "Pass did not complete normally. Ending session "
+                    "instead of risking an uncertain retry."
+                )
+                break
+
+            first_pass = False
+
+            try:
+                await asyncio.wait_for(
+                    stop.wait(),
+                    timeout=min(
+                        POLL_SECONDS,
+                        max(1, deadline - time.monotonic()),
+                    ),
+                )
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        log.info("Stopping browser.")
+        await browser.stop()
+        log.info("Aegis session ended.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
