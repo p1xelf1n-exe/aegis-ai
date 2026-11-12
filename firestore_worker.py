@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from firestore_http import error_detail, fetch
 
 MAIN = 'cf-minecraft-767a6'
 SERVER = 'database-3-9462a'
@@ -77,8 +78,10 @@ class Worker:
         self.uid = ''
 
     async def request(self, method, url, **kwargs):
-        r = await self.c.request(method, url, **kwargs)
+        r = await fetch(self.c, method, url, secrets=(self.token, self.uid, AUTH_KEY), **kwargs)
         if r.status_code >= 400:
+            if url.startswith(ROOT):
+                raise RuntimeError('Firestore request failed: ' + error_detail(r, (self.token, self.uid, AUTH_KEY)))
             raise RuntimeError('Request failed: HTTP ' + str(r.status_code) + '; endpoint=' + url.split('?')[0])
         return r
 
@@ -87,11 +90,11 @@ class Worker:
         return {'Authorization': 'Bearer ' + self.token} if project == MAIN else {}
 
     async def doc(self, project, path, optional=False):
-        r = await self.c.get(base(project) + '/' + path, headers=self.headers(project))
+        r = await fetch(self.c, 'GET', base(project) + '/' + path, secrets=(self.token, self.uid, AUTH_KEY), headers=self.headers(project))
         if r.status_code == 404 and optional:
             return {}
         if r.status_code != 200:
-            raise RuntimeError('Required identity/control read failed: ' + project + '/' + path.split('/')[0] + '; HTTP ' + str(r.status_code))
+            raise RuntimeError('Required identity/control read failed: ' + project + '/' + path.split('/')[0] + '; ' + error_detail(r, (self.token, self.uid, AUTH_KEY)))
         return r.json()
 
     async def login(self):
@@ -181,12 +184,12 @@ class Worker:
         doc, p, _ = await self.checks()
         reply_id = 'aegis_reply_' + hashlib.sha256((self.uid + ':' + source).encode()).hexdigest()
         path = base(SERVER) + '/messages/' + reply_id
-        exists = await self.c.get(path)
+        exists = await fetch(self.c, 'GET', path, secrets=(self.token, self.uid, AUTH_KEY))
         if exists.status_code == 200:
             log.info('Reply already exists; no duplicate sent')
             return
         if exists.status_code != 404:
-            raise RuntimeError('Cannot verify reply deduplication')
+            raise RuntimeError('Cannot verify reply deduplication: ' + error_detail(exists, (self.token, self.uid, AUTH_KEY)))
         if channel == 'global':
             # Reserve a conservative free-tier allowance, even for paid accounts.
             day = datetime.now(timezone.utc).strftime('%Y-%m-%d')
