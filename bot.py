@@ -241,18 +241,40 @@ async def main() -> None:
                 log.exception("Agent exception. Ending session.")
                 raise
 
+                          status = getattr(result, "status", "unknown")
+            success = result.is_successful()
+            errors = result.errors()
+            error = getattr(result, "error", None)
+
             log.info(
-                "Pass complete. Status: %s",
-                getattr(result, "status", "unknown"),
+                "Pass finished. Status=%s; success=%s",
+                status,
+                success,
             )
 
-            if getattr(result, "status", None) != "completed":
-                log.error(
-                    "Pass did not complete normally. Ending session "
-                    "instead of risking an uncertain retry."
-                )
-                break
+            if error or errors:
+                details = str(error or errors)
 
+                for secret in (
+                    os.getenv("GROQ_API_KEY", ""),
+                    username,
+                    password,
+                ):
+                    if secret:
+                        details = details.replace(secret, "[REDACTED]")
+
+                log.error("Agent error: %s", details[:2000])
+
+            if (
+                status != "completed"
+                or success is not True
+                or error
+                or errors
+            ):
+                raise RuntimeError(
+                    "Agent pass failed or did not report success. "
+                    "Stopping instead of continuing."
+                )
             first_pass = False
 
             try:
