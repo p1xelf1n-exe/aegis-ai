@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 from datetime import datetime
 
@@ -11,6 +12,31 @@ CHANNELS = ("global", "aegis-ai")
 ENDPOINT = f"https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents:runQuery"
 LIMIT = 50
 log = logging.getLogger("aegis.firestore")
+
+
+def describe_error(response):
+    status = "UNKNOWN"
+    message = "No structured Firestore error available."
+    try:
+        payload = response.json()
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        if isinstance(error, dict):
+            candidate = str(error.get("status", "UNKNOWN"))
+            if re.fullmatch(r"[A-Z_]{1,64}", candidate):
+                status = candidate
+            if isinstance(error.get("message"), str):
+                message = error["message"][:8000]
+    except (ValueError, TypeError):
+        pass
+    for name in ("GROQ_API_KEY", "SITE_USERNAME", "SITE_PASSWORD", "FIREBASE_ID_TOKEN", "FIREBASE_REFRESH_TOKEN"):
+        value = os.getenv(name, "")
+        if value:
+            message = message.replace(value, "[REDACTED]")
+    message = re.sub(r"https?://\S+", "[URL OMITTED]", message)
+    message = re.sub(r"Bearer\s+\S+", "Bearer [REDACTED]", message, flags=re.I)
+    message = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[TOKEN REDACTED]", message)
+    message = " ".join(message.split())[:1200]
+    return f"HTTP {response.status_code}; status={status}; message={message}"
 
 
 def query_body(channel):
@@ -30,9 +56,8 @@ async def read_channel(client, channel):
     response = await client.post(ENDPOINT, json=query_body(channel))
     if response.status_code != 200:
         raise RuntimeError(
-            f"Firestore read failed: HTTP {response.status_code}. "
-            "Check Server 3 read permissions and the channelId/timestamp index; "
-            "do not make rules public to work around this. Response body not logged."
+            f"Firestore read failed for channel={channel}: {describe_error(response)}. "
+            "No writes attempted. Do not weaken database rules."
         )
     rows = response.json()
     if not isinstance(rows, list):
