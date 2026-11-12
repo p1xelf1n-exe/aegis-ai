@@ -17,12 +17,12 @@ async def main():
 
     task_instructions ="""
     BROWSER WORKFLOW:
-    1. Navigate to https://YOUR_WEBSITE_URL_HERE.
+    1. Navigate to https://sp1der.framer.photos.
     2. If you see a login screen, use type_secret('x_username') in the username/email field, type_secret('x_password') in the password field, and click Log In.
     3. Once logged in, locate and click on the "Community" tab or menu button.
     4. Look at the list of available servers (or channels) on the left/top sidebar.
-    5. Go through each server one by one:
-       - Click on the server to open its chat feed.
+    5. Go through each server and channel one by one:
+       - Click on the server and channel to open its chat feed.
        - Read the recent messages from other users and evaluate the conversation context.
        - Decide based on your Aegis AI rules below whether to reply, flag an issue to @sigma, or stay silent.
        - If you decide to reply or flag to @sigma, click the chat message input box, type out your sassy response or @sigma report, and press Enter (or click Send).
