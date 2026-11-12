@@ -17,15 +17,18 @@ log = logging.getLogger("aegis.firestore")
 def describe_error(response):
     status = "UNKNOWN"
     message = "No structured Firestore error available."
+    shape = "non-json"
     try:
         payload = response.json()
-        error = payload.get("error", {}) if isinstance(payload, dict) else {}
-        if isinstance(error, dict):
-            candidate = str(error.get("status", "UNKNOWN"))
-            if re.fullmatch(r"[A-Z_]{1,64}", candidate):
-                status = candidate
-            if isinstance(error.get("message"), str):
-                message = error["message"][:8000]
+        shape = type(payload).__name__
+        envelopes = payload if isinstance(payload, list) else [payload]
+        error = next((item["error"] for item in envelopes
+                      if isinstance(item, dict) and isinstance(item.get("error"), dict)), {})
+        candidate = str(error.get("status", "UNKNOWN"))
+        if re.fullmatch(r"[A-Z_]{1,64}", candidate):
+            status = candidate
+        if isinstance(error.get("message"), str):
+            message = error["message"][:8000]
     except (ValueError, TypeError):
         pass
     for name in ("GROQ_API_KEY", "SITE_USERNAME", "SITE_PASSWORD", "FIREBASE_ID_TOKEN", "FIREBASE_REFRESH_TOKEN"):
@@ -36,7 +39,8 @@ def describe_error(response):
     message = re.sub(r"Bearer\s+\S+", "Bearer [REDACTED]", message, flags=re.I)
     message = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[TOKEN REDACTED]", message)
     message = " ".join(message.split())[:1200]
-    return f"HTTP {response.status_code}; status={status}; message={message}"
+    content_type = re.sub(r"[^a-zA-Z0-9/+.;= -]", "", response.headers.get("content-type", "unknown"))[:100]
+    return f"HTTP {response.status_code}; status={status}; shape={shape}; content-type={content_type}; message={message}"
 
 
 def query_body(channel):
