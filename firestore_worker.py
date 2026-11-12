@@ -117,9 +117,21 @@ class Worker:
         ctl = fields(await self.doc(MAIN, 'system/chatControls', True))
         popup = fields(await self.doc(MAIN, 'system/globalPopup', True))
         sigma = fields(await self.doc(CONTROL, 'system/sigmaState', True))
-        # Conservative: do not exercise the website Aegis exemption during a Sigma review.
-        if ctl.get('locked') or popup.get('active') or sigma.get('active') or sigma.get('chatLocked'):
-            raise RuntimeError('Staff/Sigma lock or review active; no reply permitted')
+        flags = {
+            'staff_locked': bool(ctl.get('locked')),
+            'site_lockout': bool(popup.get('active')),
+            'sigma_review_active': bool(sigma.get('active')),
+            'sigma_chat_locked': bool(sigma.get('chatLocked')),
+        }
+        # Match Sp1der: verified Aegis role may interact during review, not during chat lock.
+        review_allowed = not flags['sigma_review_active'] or p.get('role') == 'aegis'
+        log.info('Lock check: staff_locked=%s; site_lockout=%s; sigma_review_active=%s; sigma_chat_locked=%s; review_allowed=%s',
+                 flags['staff_locked'], flags['site_lockout'], flags['sigma_review_active'], flags['sigma_chat_locked'], review_allowed)
+        blocked = [name for name in ('staff_locked', 'site_lockout', 'sigma_chat_locked') if flags[name]]
+        if not review_allowed:
+            blocked.append('sigma_review_not_allowed')
+        if blocked:
+            raise RuntimeError('Sending blocked by: ' + ', '.join(blocked) + '. No lock settings were changed.')
         slow = max(60, float(ctl.get('slowSec', 0)), float(sigma.get('slowmode', 0)))
         if slow > 300:
             raise RuntimeError('Slow mode exceeds controlled test window')
