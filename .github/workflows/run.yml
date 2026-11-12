@@ -45,7 +45,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SITE_USERNAME: ${{ secrets.SITE_USERNAME }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
-          GROQ_MODEL: 'llama-3.3-70b-versatile'
+          GROQ_MODEL: 'openai/gpt-oss-120b'
           SEND_ENABLED: 'false'
           SESSION_SECONDS: '20100'
           POLL_SECONDS: '30'
