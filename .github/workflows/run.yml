@@ -2,6 +2,12 @@ name: Aegis Community Assistant
 
 on:
   workflow_dispatch:
+    inputs:
+      send_enabled:
+        description: 'Allow ONE reply to a fresh @Aegis mention on Server 3'
+        type: boolean
+        default: true
+        required: true
 
 permissions:
   contents: read
@@ -11,9 +17,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  firestore-diagnostic:
+  controlled-reply-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -23,12 +29,16 @@ jobs:
           python-version: '3.12'
       - name: Install HTTP client only
         run: python -m pip install 'httpx>=0.27,<1'
-      - name: Check Python syntax
-        run: python -m py_compile firestore_probe.py
-      - name: Read Server 3 channel metadata only
+      - name: Check syntax and run offline tests
+        run: |
+          python -m py_compile firestore_worker.py
+          python -m unittest -v test_firestore_worker.py
+      - name: Read and optionally send one Server 3 reply
         env:
           PYTHONUNBUFFERED: '1'
-          SEND_ENABLED: 'false'
-          SESSION_SECONDS: '300'
-          POLL_SECONDS: '60'
-        run: python -u firestore_probe.py
+          SEND_ENABLED: ${{ inputs.send_enabled }}
+          SITE_USERNAME: ${{ secrets.SITE_USERNAME }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: 'openai/gpt-oss-120b'
+        run: python -u firestore_worker.py
