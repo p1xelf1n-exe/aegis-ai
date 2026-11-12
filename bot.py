@@ -4,7 +4,7 @@ from browser_use import Agent, Browser
 
 
 async def main():
-    # Update this to your exact framer.photos domain (or remove allowed_domains if private)
+    # REPLACE YOUR_SUBDOMAIN with your actual Framer subdomain!
     browser = Browser(
         "chromium",
         headless=True,
@@ -18,7 +18,7 @@ async def main():
 
     task_instructions = """
     BROWSER WORKFLOW:
-    1. Navigate to https://YOUR_SUBDOMAIN.framer.photos.
+    1. Navigate to https://sp1der.framer.photos.
     2. If you see a login screen:
        - Click on the username/email input box first to focus it, then call type_secret('x_username').
        - Click on the password input box first to focus it, then call type_secret('x_password').
@@ -56,12 +56,12 @@ async def main():
     - Never claim an external action occurred unless you actually performed it in the browser.
     """
 
+    # Uses Groq's free tier (up to 1,000 - 14,400 requests/day)
     agent = Agent(
         task=task_instructions,
-        llm="openrouter:openrouter/free",
+        llm="groq:llama-3.3-70b-versatile",
         browser=browser,
         sensitive_data=sensitive_data,
-        use_vision=True,  # Lets Aegis visually see Framer icons, buttons, and unread badges
     )
 
     try:
