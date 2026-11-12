@@ -57,11 +57,14 @@ async def fetch(client, method, url, *, secrets=(), **kwargs):
     if not read:
         return await client.request(method, url, **kwargs)
     # At most five attempts, with a 120-second total read budget. Never retry writes.
+    # 429s are daily-quota exhaustions that will not recover inside the retry
+    # window, so they return immediately and let the caller fail over to a
+    # backup server instead of burning the whole budget per read.
     deadline = time.monotonic() + 120
     for attempt in range(5):
         remaining = deadline - time.monotonic()
         response = await client.request(method, url, timeout=min(45, max(0.1, remaining)), **kwargs)
-        if response.status_code not in (429, 502, 503, 504) or attempt == 4:
+        if response.status_code not in (502, 503, 504) or attempt == 4:
             return response
         delay = max(5 * 2 ** attempt + random.uniform(0, 1), retry_after(response))
         if delay + 1 >= deadline - time.monotonic():

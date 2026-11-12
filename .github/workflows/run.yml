@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       send_enabled:
-        description: 'Allow ONE reply to a fresh @Aegis mention on Server 3'
+        description: 'Allow ONE reply to a fresh @Aegis mention on any message server'
         type: boolean
         default: true
         required: true
