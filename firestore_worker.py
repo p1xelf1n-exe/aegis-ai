@@ -35,6 +35,8 @@ CHANNELS = ('global', 'aegis-ai')
 ROOT = 'https://firestore.googleapis.com/v1/projects/'
 POLL_SECONDS = max(5, int(os.getenv('POLL_SECONDS', '30')))
 QUOTA_COOLDOWN_SECONDS = max(60, int(os.getenv('QUOTA_COOLDOWN_SECONDS', '300')))
+STATUS_PATH = 'system/aegisStatus'
+STATUS_MIN_WRITE_INTERVAL = 20
 log = logging.getLogger('aegis')
 
 
@@ -44,6 +46,59 @@ class QuotaExhausted(RuntimeError):
 
 class IdentityUnavailable(RuntimeError):
     """Identity could not be verified right now (quota); retry later, never assume."""
+
+
+class Status:
+    """Best-effort live status: a heartbeat document on a healthy message
+    server (publicly readable, no secrets) plus GitHub Actions step-summary
+    lines, so the session is observable without reading raw logs."""
+
+    def __init__(self, client):
+        self.c = client
+        self.home = ''
+        self.last_write = 0.0
+        self.last_write_failed = 0.0
+        self.data = {
+            'state': 'booting', 'detail': 'starting up',
+            'sessionStart': datetime.now(timezone.utc).isoformat(),
+            'heartbeatAt': '', 'lastPollAt': '', 'lastPollServer': '', 'lastPollDocs': 0,
+            'messagesSeen': 0, 'repliesSent': 0, 'lastReplyAt': '', 'lastReplyServer': '',
+            'sending': False, 'servers': {},
+        }
+
+    def note(self, line):
+        path = os.getenv('GITHUB_STEP_SUMMARY', '')
+        if not path:
+            return
+        try:
+            with open(path, 'a', encoding='utf-8') as f:
+                f.write('- %s — %s\n' % (datetime.now(timezone.utc).strftime('%H:%M:%SZ'), line))
+        except OSError:
+            pass
+
+    async def report(self, state=None, detail=None, force=False, **counts):
+        if state is not None:
+            self.data['state'] = state
+        if detail is not None:
+            self.data['detail'] = detail
+        self.data.update(counts)
+        self.data['heartbeatAt'] = datetime.now(timezone.utc).isoformat()
+        now = time.monotonic()
+        if not force and now - self.last_write < STATUS_MIN_WRITE_INTERVAL:
+            return
+        order = ([self.home] if self.home else []) + [s for s in MESSAGE_SERVERS if s != self.home]
+        for server in order:
+            try:
+                r = await self.c.patch(base(server) + '/' + STATUS_PATH, timeout=20,
+                                       json={'fields': {k: pack(v) for k, v in self.data.items()}})
+                if r.status_code == 200:
+                    self.home, self.last_write = server, now
+                    return
+            except Exception:
+                continue
+        if now - self.last_write_failed > 300:
+            self.last_write_failed = now
+            log.warning('Status heartbeat could not be written to any server; continuing without it')
 
 
 def base(project):
@@ -342,6 +397,9 @@ async def main():
 
     async with httpx.AsyncClient(timeout=45, follow_redirects=False, trust_env=False) as client:
         w = Worker(client)
+        status = Status(client)
+        await status.report(state='booting', detail='signing in', force=True, sending=sending)
+        status.note('Session starting (sending=%s)' % ('live' if sending else 'dry run'))
         # Sign in. A quota-exhausted main database with no mirror yet is retried
         # until the daily reset clears it; wrong credentials still stop the run.
         while not stop.is_set():
@@ -350,22 +408,43 @@ async def main():
                 break
             except (QuotaExhausted, IdentityUnavailable) as exc:
                 log.warning('Login unavailable (quota); retrying in %ss: %s', QUOTA_COOLDOWN_SECONDS, exc)
+                await status.report(state='login_retry', detail='main database quota-exhausted; retrying login until the daily reset', force=True)
+                status.note('Login deferred by quota; retrying every %ss' % QUOTA_COOLDOWN_SECONDS)
                 await pause(QUOTA_COOLDOWN_SECONDS)
         if stop.is_set():
+            await status.report(state='stopped', detail='stopped before login completed', force=True)
             log.info('Session stopped before login completed.')
             return
+        await status.report(state='baseline', detail='reading message baselines on every server', force=True)
+        status.note('Signed in; reading message baselines')
         seen, cutoffs, cooldowns = set(), {}, {}
+        server_health = {}
         for server in MESSAGE_SERVERS:
             try:
                 docs, cutoff = await w.recent(server)
             except QuotaExhausted as exc:
                 log.warning('Server quota-exhausted at baseline; will retry after cooldown: %s', exc)
                 cooldowns[server] = time.monotonic() + QUOTA_COOLDOWN_SECONDS
+                server_health[server] = 'quota'
                 continue
+            server_health[server] = 'ok'
             seen.update((server, name) for name, _ in docs)
             cutoffs[server] = datetime.fromisoformat(cutoff.replace('Z', '+00:00'))
             log.info('Silent content baseline: server=%s; documents=%s', server, len(docs))
-        log.info('READY: watching every message server for fresh @Aegis mentions; sending=%s; runs until stopped', sending)
+        await status.report(state='watching', detail='watching for @Aegis mentions', force=True,
+                            servers=server_health, messagesSeen=len(seen))
+        status.note('Watching %d healthy server(s): %s' % (
+            sum(1 for v in server_health.values() if v == 'ok'),
+            ', '.join(s for s, v in server_health.items() if v == 'ok') or 'none yet'))
+
+        async def heartbeat():
+            while not stop.is_set():
+                await pause(30)
+                if stop.is_set():
+                    return
+                await status.report(messagesSeen=len(seen))
+
+        heartbeat_task = asyncio.create_task(heartbeat())
         slow, last_send = 60.0, 0.0
         while not stop.is_set():
             await pause(POLL_SECONDS)
@@ -379,10 +458,16 @@ async def main():
                 except QuotaExhausted as exc:
                     log.warning('Server quota-exhausted; cooling down: %s', exc)
                     cooldowns[server] = time.monotonic() + QUOTA_COOLDOWN_SECONDS
+                    server_health[server] = 'quota'
+                    await status.report(servers=server_health, force=True)
                     continue
+                server_health[server] = 'ok'
                 cutoffs.setdefault(server, datetime.fromisoformat(cutoff.replace('Z', '+00:00')))
                 if len(docs) == 50:
                     log.warning('Message window full on %s; processing the newest messages only', server)
+                await status.report(lastPollAt=datetime.now(timezone.utc).isoformat(),
+                                    lastPollServer=server, lastPollDocs=len(docs),
+                                    messagesSeen=len(seen), servers=server_health)
                 for name, p in reversed(docs):
                     if stop.is_set() or (server, name) in seen:
                         continue
@@ -394,6 +479,7 @@ async def main():
                     if not isinstance(content, str) or not re.search(r'(?i)(?<!\w)@aegis\b', content):
                         continue
                     try:
+                        await status.report(state='thinking', detail='deciding how to answer a mention on %s' % server, force=True, messagesSeen=len(seen))
                         # Respect slowmode both from the mention's age and between the bot's own replies.
                         age_wait = max(0.0, slow - (datetime.now(timezone.utc) - stamp).total_seconds())
                         send_wait = max(0.0, slow - (time.monotonic() - last_send)) if last_send else 0.0
@@ -404,19 +490,34 @@ async def main():
                         body = await w.generate(docs, p)
                         if body is None:
                             log.info('Model stayed silent for a mention on %s', server)
+                            status.note('Stayed silent for a mention on %s' % server)
                             continue
                         if sending:
+                            await status.report(state='replying', detail='sending a reply on %s' % server, force=True)
                             await w.send(server, name, p, body)
                             last_send = time.monotonic()
                             log.info('Reply sent on %s; continuing to watch.', server)
+                            status.note('Reply sent on %s' % server)
                         else:
                             log.info('Dry run: would reply on %s: %s', server, body[:120])
+                            status.note('Dry run: would reply on %s' % server)
+                        await status.report(state='watching', detail='watching for @Aegis mentions', force=True,
+                                            messagesSeen=len(seen), repliesSent=status.data['repliesSent'] + (1 if sending else 0),
+                                            lastReplyAt=datetime.now(timezone.utc).isoformat() if sending else status.data['lastReplyAt'],
+                                            lastReplyServer=server if sending else status.data['lastReplyServer'])
                     except Exception as exc:
                         # Un-mark the mention so it is retried after the cooldown.
                         seen.discard((server, name))
                         cooldowns[server] = time.monotonic() + QUOTA_COOLDOWN_SECONDS
+                        server_health[server] = 'quota'
                         log.warning('Mention on %s deferred (%s); will retry after cooldown: %s', server, type(exc).__name__, exc)
+                        await status.report(state='watching', detail='%s deferred; cooling down and retrying' % server,
+                                            servers=server_health, force=True)
                         break
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+        await status.report(state='stopped', detail='session ended', force=True, messagesSeen=len(seen))
+        status.note('Session stopped; %d reply/replies sent' % status.data['repliesSent'])
         log.info('Session stopped; no further replies.')
 
 

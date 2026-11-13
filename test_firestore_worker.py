@@ -1,9 +1,10 @@
 import asyncio
+import json
 import os
 import unittest
 from unittest.mock import AsyncMock
 import httpx
-from firestore_worker import Worker, outcome, pack, unpack, QuotaExhausted, MESSAGE_SERVERS, MAIN
+from firestore_worker import Worker, outcome, pack, unpack, QuotaExhausted, IdentityUnavailable, MESSAGE_SERVERS, MAIN, Status
 
 QUOTA_BODY = {'error': {'code': 429, 'message': 'Quota exceeded.', 'status': 'RESOURCE_EXHAUSTED'}}
 
@@ -119,6 +120,24 @@ class WorkerTests(unittest.TestCase):
                 w.request = AsyncMock()
                 await w.send(MESSAGE_SERVERS[2], 'aegis-ai', 'source', {}, 'hello')
                 w.request.assert_not_called()
+        asyncio.run(check())
+
+    def test_status_writes_heartbeat(self):
+        writes = []
+
+        def route(request):
+            if request.method == 'PATCH':
+                writes.append((str(request.url), json.loads(request.content.decode())))
+                return httpx.Response(200, json={})
+            return httpx.Response(403, json={})
+        async def check():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as c:
+                s = Status(c)
+                await s.report(state='watching', detail='test', force=True, repliesSent=2)
+                self.assertTrue(writes)
+                self.assertIn(MESSAGE_SERVERS[0], writes[0][0])
+                self.assertEqual(writes[0][1]['fields']['state']['stringValue'], 'watching')
+                self.assertEqual(writes[0][1]['fields']['repliesSent']['integerValue'], '2')
         asyncio.run(check())
 
     def test_send_targets_found_server(self):
