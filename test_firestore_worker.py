@@ -62,7 +62,9 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(w.uid, 'uid1')
         asyncio.run(check())
 
-    def test_login_fails_without_mirror(self):
+    def test_login_bootstraps_mirror_when_main_quota_exhausted(self):
+        commits = []
+
         def route(request):
             url = str(request.url)
             if 'signInWithPassword' in url:
@@ -71,15 +73,22 @@ class WorkerTests(unittest.TestCase):
                 if 'accountData/' in url:
                     return httpx.Response(404, json={})
                 return httpx.Response(429, json=QUOTA_BODY)
+            if request.method == 'POST' and ':commit' in url:
+                commits.append((url, json.loads(request.content.decode())))
+                return httpx.Response(200, json={})
             return httpx.Response(200, json={})
         async def check():
             os.environ.setdefault('SITE_USERNAME', 'aegis@example.com')
             os.environ.setdefault('SITE_PASSWORD', 'pw')
-            transport = httpx.MockTransport(route)
-            async with httpx.AsyncClient(transport=transport) as c:
-                with self.assertRaises(RuntimeError) as ctx:
-                    await Worker(c).login()
-                self.assertIn('mirror', str(ctx.exception))
+            async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as c:
+                w = Worker(c)
+                await w.login()  # main database quota-exhausted, no mirror: degraded bootstrap, no exception
+                self.assertEqual(w.uid, 'uid1')
+            self.assertTrue(commits)
+            doc_name = commits[0][1]['writes'][0]['update']['name']
+            self.assertIn('accountData/uid1', doc_name)
+            payload = commits[0][1]['writes'][0]['update']['fields']
+            self.assertEqual(payload['role']['stringValue'], 'aegis')
         asyncio.run(check())
 
     def test_checks_degraded_on_quota(self):

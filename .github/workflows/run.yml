@@ -8,6 +8,12 @@ on:
         type: boolean
         default: true
         required: true
+  # GitHub kills hosted jobs after 6 hours, so the session cannot literally run
+  # forever. This daily restart at 02:35 America/Chicago (right after the
+  # Firestore daily quota resets) keeps a live session running every day until
+  # you disable the workflow. Disable or delete this schedule to stop it.
+  schedule:
+    - cron: '35 8 * * *'
 
 permissions:
   contents: read
@@ -38,7 +44,7 @@ jobs:
       - name: Watch for @Aegis mentions and reply until stopped
         env:
           PYTHONUNBUFFERED: '1'
-          SEND_ENABLED: ${{ inputs.send_enabled }}
+          SEND_ENABLED: ${{ (github.event_name == 'schedule') || inputs.send_enabled }}
           SITE_USERNAME: ${{ secrets.SITE_USERNAME }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
