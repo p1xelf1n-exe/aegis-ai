@@ -8,6 +8,11 @@ on:
         type: boolean
         default: true
         required: true
+      open_world:
+        description: 'EARLY ACCESS: send Aegis to its own 3D open world instead of chat (unchecked = chat mode)'
+        type: boolean
+        default: false
+        required: false
   # GitHub kills hosted jobs after 6 hours, so the session cannot literally run
   # forever. This daily restart at 02:35 America/Chicago (right after the
   # Firestore daily quota resets) keeps a live session running every day until
@@ -39,14 +44,21 @@ jobs:
         run: python -m pip install 'httpx>=0.27,<1'
       - name: Check syntax and run offline tests
         run: |
-          python -m py_compile firestore_worker.py
-          python -m unittest -v test_firestore_worker.py
+          python -m py_compile firestore_worker.py world_worker.py
+          python -m unittest -v test_firestore_worker.py test_world_worker.py
       - name: Watch for @Aegis mentions and reply until stopped
         env:
           PYTHONUNBUFFERED: '1'
           SEND_ENABLED: ${{ (github.event_name == 'schedule') || inputs.send_enabled }}
+          AEGIS_MODE: ${{ inputs.open_world == true && 'world' || 'chat' }}
           SITE_USERNAME: ${{ secrets.SITE_USERNAME }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: 'openai/gpt-oss-120b'
-        run: python -u firestore_worker.py
+        run: |
+          if [ "$AEGIS_MODE" = "world" ]; then
+            echo "Aegis is entering the open world (early access)"
+            python -u world_worker.py
+          else
+            python -u firestore_worker.py
+          fi

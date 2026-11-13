@@ -131,6 +131,8 @@ def pack(value):
         return {'integerValue': str(value)}
     if isinstance(value, dict):
         return {'mapValue': {'fields': {k: pack(v) for k, v in value.items()}}}
+    if isinstance(value, list):
+        return {'arrayValue': {'values': [pack(v) for v in value]}}
     return {'stringValue': str(value)}
 
 
