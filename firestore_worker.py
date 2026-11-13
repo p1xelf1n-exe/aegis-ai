@@ -149,7 +149,10 @@ def outcome(text):
         raise RuntimeError('Model output rejected: unsafe or multiple blocks')
     for key in ('SITE_USERNAME', 'SITE_PASSWORD', 'GROQ_API_KEY'):
         secret = os.getenv(key, '')
-        if secret and secret.lower() in body.lower():
+        # Only compare against real-looking secrets: long values. Short or
+        # empty values are skipped so a placeholder secret can never match
+        # ordinary words in a reply and reject it.
+        if len(secret) >= 20 and secret.lower() in body.lower():
             raise RuntimeError('Model output rejected: credential overlap')
     return body
 

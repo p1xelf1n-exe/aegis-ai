@@ -228,5 +228,16 @@ class WorkerTests(unittest.TestCase):
         asyncio.run(check())
 
 
+    def test_outcome_secret_check(self):
+        # A real-looking secret echoed in a reply is rejected
+        with mock.patch.dict(os.environ, {'GROQ_API_KEY': 'gsk-' + 'x' * 40}):
+            with self.assertRaises(RuntimeError):
+                outcome('[FINAL RESPONSE] here: gsk-%s [END FINAL RESPONSE]' % ('x' * 40))
+        # A short placeholder secret must not reject ordinary replies
+        with mock.patch.dict(os.environ, {'GROQ_API_KEY': 'short'}):
+            body = outcome('[FINAL RESPONSE] short and sweet [END FINAL RESPONSE]')
+            self.assertEqual(body, 'short and sweet')
+
+
 if __name__ == '__main__':
     unittest.main()
