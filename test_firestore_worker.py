@@ -86,6 +86,7 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(w.uid, 'uid1')
             self.assertTrue(commits)
             doc_name = commits[0][1]['writes'][0]['update']['name']
+            self.assertTrue(doc_name.startswith('projects/'))
             self.assertIn('accountData/uid1', doc_name)
             payload = commits[0][1]['writes'][0]['update']['fields']
             self.assertEqual(payload['role']['stringValue'], 'aegis')
