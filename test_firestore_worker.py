@@ -2,8 +2,11 @@ import asyncio
 import json
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
+from unittest import mock
 from unittest.mock import AsyncMock
 import httpx
+import firestore_worker
 from firestore_worker import Worker, outcome, pack, unpack, QuotaExhausted, IdentityUnavailable, MESSAGE_SERVERS, MAIN, Status
 
 QUOTA_BODY = {'error': {'code': 429, 'message': 'Quota exceeded.', 'status': 'RESOURCE_EXHAUSTED'}}
@@ -168,6 +171,60 @@ class WorkerTests(unittest.TestCase):
                 await w.send('database-1-ec196', 'aegis-ai', 'source', {}, 'hello')
             self.assertTrue(commits)
             self.assertIn('database-1-ec196', commits[0])
+        asyncio.run(check())
+
+
+    def test_main_reply_posts_to_the_right_channel(self):
+        commits = []
+        stop = asyncio.Event()
+        queries = {'n': 0}
+
+        def route(request):
+            url = str(request.url)
+            if request.method == 'POST' and ':runQuery' in url:
+                queries['n'] += 1
+                # 5 queries build the silent baseline; the 6th reveals the mention.
+                # The mention is 61s old (past the 60s slowmode) but newer than
+                # the baseline cutoff, so it is processed immediately.
+                now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                baseline = (datetime.now(timezone.utc) - timedelta(seconds=120)).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                stamp = (datetime.now(timezone.utc) - timedelta(seconds=61)).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                if queries['n'] > 5 and 'database-1-ec196' in url:
+                    return httpx.Response(200, json=[{'readTime': now, 'document': {
+                        'name': 'projects/database-1-ec196/databases/(default)/documents/messages/mention1',
+                        'fields': {'content': {'stringValue': '@aegis hello there'}, 'channelId': {'stringValue': 'global'},
+                                   'username': {'stringValue': 'member'}, 'timestamp': {'timestampValue': stamp}}}}])
+                return httpx.Response(200, json=[{'readTime': baseline}])
+            if request.method == 'POST' and ':commit' in url:
+                commits.append(request.read().decode())
+                return httpx.Response(200, json={})
+            return httpx.Response(404, json={})
+
+        class StubWorker(Worker):
+            def __init__(self, client):
+                super().__init__(client)
+                self.login = AsyncMock(return_value=None)
+                self.uid = 'test'
+                self.checks = AsyncMock(return_value=(None, {'role': 'aegis', 'tier': 'free'}, 0))
+                self.generate = AsyncMock(return_value='hello there')
+
+        async def check():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as c:
+                with mock.patch('firestore_worker.POLL_SECONDS', 0.01), \
+                        mock.patch('firestore_worker.QUOTA_COOLDOWN_SECONDS', 0.01), \
+                        mock.patch('firestore_worker.Worker', StubWorker):
+                    task = asyncio.create_task(firestore_worker.run(c, stop, True))
+                    for _ in range(500):
+                        if commits:
+                            break
+                        await asyncio.sleep(0.01)
+                    stop.set()
+                    await asyncio.wait_for(task, 5)
+            fields = json.loads(commits[0])['writes'][0]['update']['fields']
+            # the reply must land in the mention's channel, not name the message path
+            self.assertEqual(fields['channelId']['stringValue'], 'global')
+            self.assertEqual(fields['content']['stringValue'], 'hello there')
+
         asyncio.run(check())
 
 
