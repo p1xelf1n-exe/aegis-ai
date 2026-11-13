@@ -34,8 +34,39 @@ MAX_THOUGHTS = 24
 MAX_SPEECH = 12
 SHAPES = ('cube', 'sphere', 'cone', 'cylinder', 'torus', 'pyramid', 'ring', 'star')
 FORMS = SHAPES
+EFFECTS = ('stars', 'rain', 'snow', 'aurora', 'fireflies')
+MAX_EFFECTS = 3
 COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 URL_RE = re.compile(r'https?://\S+', re.I)
+
+# default look of the world — Aegis can change all of it
+DEFAULT_ENV = {
+    'skyTop': '#0d0221', 'skyBottom': '#2b1258',
+    'fogColor': '#1a0a3a', 'fogDensity': 0.35,
+    'lightColor': '#cdbaff', 'lightIntensity': 1.0,
+    'groundColor': '#11042a',
+    'effects': [],
+}
+
+
+def ensure_env(state):
+    """Fill in environment defaults (old world docs have no env yet)."""
+    env = state.setdefault('env', {})
+    if not isinstance(env, dict):
+        env = {}
+        state['env'] = env
+    for key, value in DEFAULT_ENV.items():
+        env.setdefault(key, value if not isinstance(value, list) else [])
+    if not isinstance(env['effects'], list):
+        env['effects'] = []
+    env['effects'] = [e for e in env['effects'] if e in EFFECTS][:MAX_EFFECTS]
+    return env
+
+
+def hex_color(value, fallback):
+    """Return value if it is a valid #rrggbb color, else the fallback."""
+    value = str(value or '')
+    return value if COLOR_RE.match(value) else fallback
 
 
 def clamp(value, low, high):
@@ -195,6 +226,45 @@ def apply_action(state, action):
     if do == 'reset':
         state['entities'] = []
         state['body'] = None
+        state['env']['effects'] = []
+        return True
+    if do == 'sky':
+        env = state['env']
+        if 'top' in action:
+            env['skyTop'] = hex_color(action.get('top'), env['skyTop'])
+        if 'bottom' in action:
+            env['skyBottom'] = hex_color(action.get('bottom'), env['skyBottom'])
+        return True
+    if do == 'fog':
+        env = state['env']
+        if 'color' in action:
+            env['fogColor'] = hex_color(action.get('color'), env['fogColor'])
+        density = clamp(action.get('density'), 0, 1)
+        if density is not None:
+            env['fogDensity'] = round(density, 2)
+        return True
+    if do == 'light':
+        env = state['env']
+        if 'color' in action:
+            env['lightColor'] = hex_color(action.get('color'), env['lightColor'])
+        intensity = clamp(action.get('intensity'), 0.2, 2.0)
+        if intensity is not None:
+            env['lightIntensity'] = round(intensity, 2)
+        return True
+    if do == 'ground':
+        state['env']['groundColor'] = hex_color(action.get('color'), state['env']['groundColor'])
+        return True
+    if do == 'effect':
+        env = state['env']
+        name = str(action.get('name', '')).lower().strip()
+        if name not in EFFECTS:
+            return False
+        on = action.get('on', True)
+        if on:
+            if name not in env['effects']:
+                env['effects'] = (env['effects'] + [name])[-MAX_EFFECTS:]
+        else:
+            env['effects'] = [e for e in env['effects'] if e != name]
         return True
     return False
 
@@ -211,8 +281,10 @@ def run_plan(state, thought, actions):
 
 
 def fresh_state():
-    return {'tick': 0, 'body': None, 'entities': [], 'thoughts': [], 'speech': [],
-            'updatedAt': datetime.now(timezone.utc).isoformat()}
+    state = {'tick': 0, 'body': None, 'entities': [], 'thoughts': [], 'speech': [],
+             'updatedAt': datetime.now(timezone.utc).isoformat()}
+    ensure_env(state)
+    return state
 
 
 class WorldWorker(Worker):
@@ -230,6 +302,7 @@ class WorldWorker(Worker):
                 state.setdefault('entities', [])
                 state.setdefault('thoughts', [])
                 state.setdefault('speech', [])
+                ensure_env(state)
                 if state.get('body') is not None:
                     state['body'].setdefault('x', 0.0)
                     state['body'].setdefault('y', 2.0)
@@ -259,6 +332,7 @@ class WorldWorker(Worker):
             'tick': state['tick'],
             'body': state['body'],
             'objects': state['entities'],
+            'environment': state['env'],
             'recent_thoughts': state['thoughts'][-8:],
             'recent_speech': state['speech'][-5:],
         }
