@@ -33,8 +33,12 @@ CONTROL = 'database-2-a5b32'
 AUTH_KEY = os.getenv('FIREBASE_API_KEY') or 'AIzaSyAWY-dGQoAzrhr_m6RKoM1hVYzYysxn-bM'
 CHANNELS = ('global', 'aegis-ai')
 ROOT = 'https://firestore.googleapis.com/v1/projects/'
-POLL_SECONDS = max(5, int(os.getenv('POLL_SECONDS', '30')))
+POLL_SECONDS = max(5, int(os.getenv('POLL_SECONDS', '8')))
 QUOTA_COOLDOWN_SECONDS = max(60, int(os.getenv('QUOTA_COOLDOWN_SECONDS', '300')))
+# Conservative slowmode allowance: replies wait for the mention to age past
+# this many seconds and are spaced this far apart, even when the chat's real
+# slowmode is unreadable or unset. Tune with SLOW_FLOOR=... (0 disables).
+SLOW_FLOOR = max(0.0, float(os.getenv('SLOW_FLOOR', '15')))
 STATUS_PATH = 'system/aegisStatus'
 STATUS_MIN_WRITE_INTERVAL = 20
 log = logging.getLogger('aegis')
@@ -291,7 +295,7 @@ class Worker:
             blocked.append('sigma_review_not_allowed')
         if blocked:
             raise RuntimeError('Sending blocked by: ' + ', '.join(blocked) + '. No lock settings were changed.')
-        slow = max(60, float(ctl.get('slowSec', 0)), float(sigma.get('slowmode', 0)))
+        slow = max(SLOW_FLOOR, float(ctl.get('slowSec', 0)), float(sigma.get('slowmode', 0)))
         if slow > 300:
             log.warning('Slow mode is %.0fs; replies will be spaced accordingly', slow)
         return main_doc, p, slow
@@ -457,7 +461,7 @@ async def run(client, stop, sending):
             await status.report(messagesSeen=len(seen))
 
     heartbeat_task = asyncio.create_task(heartbeat())
-    slow, last_send = 60.0, 0.0
+    slow, last_send = SLOW_FLOOR, 0.0
     while not stop.is_set():
         await pause(POLL_SECONDS)
         if stop.is_set():

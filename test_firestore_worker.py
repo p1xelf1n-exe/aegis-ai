@@ -7,7 +7,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 import httpx
 import firestore_worker
-from firestore_worker import Worker, outcome, pack, unpack, QuotaExhausted, IdentityUnavailable, MESSAGE_SERVERS, MAIN, Status
+from firestore_worker import Worker, outcome, pack, unpack, QuotaExhausted, IdentityUnavailable, MESSAGE_SERVERS, MAIN, Status, SLOW_FLOOR
 
 QUOTA_BODY = {'error': {'code': 429, 'message': 'Quota exceeded.', 'status': 'RESOURCE_EXHAUSTED'}}
 
@@ -110,7 +110,7 @@ class WorkerTests(unittest.TestCase):
                 w.uid = 'uid1'
                 main_doc, p, slow = await w.checks()
                 self.assertEqual(p.get('role'), 'aegis')
-                self.assertEqual(slow, 60)
+                self.assertEqual(slow, SLOW_FLOOR)
         asyncio.run(check())
 
     def test_blocked_check_prevents_send(self):
