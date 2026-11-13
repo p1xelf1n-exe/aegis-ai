@@ -27,7 +27,9 @@ from firestore_worker import (Worker, Status, MESSAGE_SERVERS, base, pack, field
                              QuotaExhausted, RateLimited, log)
 
 WORLD_PATH = 'system/aegisWorld'
-WORLD_TICK_SECONDS = max(20, int(os.getenv('WORLD_TICK_SECONDS', '45')))
+# Default 150s: sized so a compacted tick (~2k tokens) fits Groq's free-tier
+# 8K tokens/min and 200K tokens/day without tripping 429s. Tune with the env var.
+WORLD_TICK_SECONDS = max(20, int(os.getenv('WORLD_TICK_SECONDS', '150')))
 MAX_OBJECTS = 80
 MAX_ACTIONS = 8
 MAX_THOUGHTS = 24
@@ -326,19 +328,27 @@ class WorldWorker(Worker):
         return saved
 
     async def think(self, state):
-        """One model turn: world in, plan out. One corrective retry on bad output."""
+        """One model turn: world in, plan out. One corrective retry on bad output.
+
+        The state is sent compact (objects as [shape,x,y,z,color,size,name] rows,
+        thoughts/speech as bare text) so a tick costs a fraction of Groq's free-tier
+        token budget; the constant rules prompt stays cacheable (cached tokens are
+        not counted against rate limits)."""
         rules = open('aegis_world_rules.txt', encoding='utf-8').read()
         visible = {
             'tick': state['tick'],
             'body': state['body'],
-            'objects': state['entities'],
+            'objects': [[e.get('shape'), e.get('x'), e.get('y'), e.get('z'),
+                         e.get('color'), e.get('size'), e.get('name')]
+                        for e in state['entities']],
             'environment': state['env'],
-            'recent_thoughts': state['thoughts'][-8:],
-            'recent_speech': state['speech'][-5:],
+            'recent_thoughts': [t.get('text', '') for t in state['thoughts'][-6:]],
+            'recent_speech': [s.get('text', '') for s in state['speech'][-4:]],
         }
         messages = [
             {'role': 'system', 'content': rules},
-            {'role': 'user', 'content': 'Current world state:\n' + json.dumps(visible, indent=1)},
+            {'role': 'user', 'content': 'Current world state (objects are [shape,x,y,z,color,size,name]):\n'
+                        + json.dumps(visible, separators=(',', ':'))},
         ]
 
         async def complete():
