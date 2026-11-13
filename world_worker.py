@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 import httpx
 
 from firestore_worker import (Worker, Status, MESSAGE_SERVERS, base, pack, fields,
-                             QuotaExhausted, log)
+                             QuotaExhausted, RateLimited, log)
 
 WORLD_PATH = 'system/aegisWorld'
 WORLD_TICK_SECONDS = max(20, int(os.getenv('WORLD_TICK_SECONDS', '45')))
@@ -342,11 +342,13 @@ class WorldWorker(Worker):
         ]
 
         async def complete():
+            model = os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b')
+            payload = {'model': model, 'temperature': 0.85, 'max_completion_tokens': 700, 'messages': messages}
+            if 'gpt-oss' in model:
+                payload['reasoning_effort'] = 'low'   # skip hidden reasoning tokens
             r = await self.request('POST', 'https://api.groq.com/openai/v1/chat/completions',
                                    headers={'Authorization': 'Bearer ' + os.environ['GROQ_API_KEY']},
-                                   json={'model': os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b'),
-                                         'temperature': 0.85, 'max_completion_tokens': 1200,
-                                         'messages': messages})
+                                   json=payload)
             m = r.json()['choices'][0]
             if m.get('finish_reason') != 'stop' or m['message'].get('tool_calls'):
                 raise RuntimeError('Incomplete or tool-bearing model output rejected')
@@ -406,6 +408,15 @@ async def run(client, stop):
             await status.report(state='quota_wait', detail='a database is quota-exhausted; cooling down', force=True)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=300)
+            except asyncio.TimeoutError:
+                pass
+        except RateLimited as exc:
+            # The model API's rate window — resume the instant it resets.
+            wait = max(15, min(exc.retry_after, 300))
+            log.warning('World tick rate-limited; resuming in %.0fs: %s', wait, exc)
+            await status.report(state='quota_wait', detail='model limit hit; resuming in %ds' % int(wait), force=True)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=wait)
             except asyncio.TimeoutError:
                 pass
         except Exception as exc:

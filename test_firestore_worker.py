@@ -7,7 +7,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 import httpx
 import firestore_worker
-from firestore_worker import Worker, outcome, pack, unpack, QuotaExhausted, IdentityUnavailable, MESSAGE_SERVERS, MAIN, Status, SLOW_FLOOR
+from firestore_worker import Worker, outcome, pack, unpack, QuotaExhausted, RateLimited, IdentityUnavailable, MESSAGE_SERVERS, MAIN, Status, SLOW_FLOOR
 
 QUOTA_BODY = {'error': {'code': 429, 'message': 'Quota exceeded.', 'status': 'RESOURCE_EXHAUSTED'}}
 
@@ -39,6 +39,18 @@ class WorkerTests(unittest.TestCase):
                 w = Worker(c)
                 with self.assertRaises(QuotaExhausted):
                     await w.request('GET', 'https://firestore.googleapis.com/v1/projects/database-2-a5b32/databases/(default)/documents/system/sigmaState')
+        asyncio.run(check())
+
+    def test_model_rate_limit_carries_retry_after(self):
+        async def check():
+            transport = httpx.MockTransport(lambda r: httpx.Response(
+                429, json={'error': {'message': 'Rate limit reached'}},
+                headers={'Retry-After': '37'}))
+            async with httpx.AsyncClient(transport=transport) as c:
+                w = Worker(c)
+                with self.assertRaises(RateLimited) as ctx:
+                    await w.request('POST', 'https://api.groq.com/openai/v1/chat/completions')
+                self.assertEqual(ctx.exception.retry_after, 37)
         asyncio.run(check())
 
     def test_login_falls_back_to_account_mirror(self):

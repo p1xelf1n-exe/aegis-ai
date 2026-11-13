@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from firestore_http import error_detail, fetch
+from firestore_http import error_detail, fetch, retry_after
 
 MAIN = 'cf-minecraft-767a6'
 # Mirror of MSG_DB_CONFIGS in the Sp1der site: five message servers.
@@ -46,6 +46,15 @@ log = logging.getLogger('aegis')
 
 class QuotaExhausted(RuntimeError):
     """A Firestore project hit its daily quota; fail over to another server."""
+
+
+class RateLimited(RuntimeError):
+    """An upstream API (e.g. the model) hit a rate limit; retry_after seconds
+    until its window resets — resume then, no longer."""
+
+    def __init__(self, message, retry_after=1):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class IdentityUnavailable(RuntimeError):
@@ -173,6 +182,9 @@ class Worker:
                 raise QuotaExhausted('Firestore daily quota exhausted: ' + detail)
             if url.startswith(ROOT):
                 raise RuntimeError('Firestore request failed: ' + detail)
+            if r.status_code == 429:
+                raise RateLimited('Request failed: HTTP 429; endpoint=' + url.split('?')[0],
+                                  retry_after=max(1, retry_after(r)))
             raise RuntimeError('Request failed: HTTP ' + str(r.status_code) + '; endpoint=' + url.split('?')[0])
         return r
 
@@ -348,10 +360,13 @@ class Worker:
                     {'role': 'user', 'content': json.dumps({'channel_context': safe_context, 'target_message': str(target.get('content', ''))[:1500]})}]
 
         async def complete():
+            model = os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b')
+            payload = {'model': model, 'temperature': 0, 'max_completion_tokens': 1200, 'messages': messages}
+            if 'gpt-oss' in model:
+                payload['reasoning_effort'] = 'low'   # skip hidden reasoning tokens
             r = await self.request('POST', 'https://api.groq.com/openai/v1/chat/completions',
                                    headers={'Authorization': 'Bearer ' + os.environ['GROQ_API_KEY']},
-                                   json={'model': os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b'), 'temperature': 0,
-                                         'max_completion_tokens': 2048, 'messages': messages})
+                                   json=payload)
             m = r.json()['choices'][0]
             if m.get('finish_reason') != 'stop' or m['message'].get('tool_calls'):
                 raise RuntimeError('Incomplete or tool-bearing model output rejected')
