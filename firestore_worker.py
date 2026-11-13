@@ -1,11 +1,16 @@
-"""One-reply worker with backup-server failover. No Admin SDK or moderation commands.
+"""Continuous community worker with backup-server failover. No Admin SDK or
+moderation commands.
 
 The Sp1der site runs one main account database plus five message-server
 databases, each with its own daily quota. When one project is quota-exhausted
 (429 RESOURCE_EXHAUSTED, resetting at midnight Pacific), the site fails over to
 a healthy one. This worker mirrors that design: identity reads fall back to the
 accountData mirror on the message servers, messages are polled on every server,
-and replies are written to the server where the mention was found."""
+and replies are written to the server where the mention was found.
+
+The session runs until stopped (workflow cancel, SIGINT/SIGTERM, or the GitHub
+Actions job timeout) and replies to every fresh @Aegis mention the model
+chooses to answer."""
 import asyncio
 import hashlib
 import html
@@ -13,6 +18,7 @@ import json
 import logging
 import os
 import re
+import signal
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +40,10 @@ log = logging.getLogger('aegis')
 
 class QuotaExhausted(RuntimeError):
     """A Firestore project hit its daily quota; fail over to another server."""
+
+
+class IdentityUnavailable(RuntimeError):
+    """Identity could not be verified right now (quota); retry later, never assume."""
 
 
 def base(project):
@@ -135,7 +145,7 @@ class Worker:
             if mirror is not None and fields(mirror).get('role'):
                 log.info('Profile loaded from the accountData mirror on %s', server)
                 return None, fields(mirror)
-        raise RuntimeError(
+        raise IdentityUnavailable(
             'The main database is quota-exhausted and no accountData mirror of this '
             'account exists yet. Run the worker once while the main database is '
             'healthy to seed the mirror; after that, quota outages fail over '
@@ -222,7 +232,7 @@ class Worker:
             raise RuntimeError('Sending blocked by: ' + ', '.join(blocked) + '. No lock settings were changed.')
         slow = max(60, float(ctl.get('slowSec', 0)), float(sigma.get('slowmode', 0)))
         if slow > 300:
-            raise RuntimeError('Slow mode exceeds controlled test window')
+            log.warning('Slow mode is %.0fs; replies will be spaced accordingly', slow)
         return main_doc, p, slow
 
     async def recent(self, server):
@@ -310,32 +320,57 @@ class Worker:
             'update': {'name': name, 'fields': {k: pack(v) for k, v in message.items()}},
             'currentDocument': {'exists': False},
             'updateTransforms': [{'fieldPath': 'timestamp', 'setToServerValue': 'REQUEST_TIME'}]}]})
-        log.info('One reply accepted: server=%s channel=%s. Test complete; stopping.', server, channel)
+        log.info('Reply accepted: server=%s channel=%s.', server, channel)
 
 
 async def main():
     sending = os.getenv('SEND_ENABLED', 'false').lower() == 'true'
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            pass
+
+    async def pause(seconds):
+        """Sleep unless the session is being stopped."""
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+
     async with httpx.AsyncClient(timeout=45, follow_redirects=False, trust_env=False) as client:
         w = Worker(client)
-        await w.login()
-        _, _, slow = await w.checks()
+        # Sign in. A quota-exhausted main database with no mirror yet is retried
+        # until the daily reset clears it; wrong credentials still stop the run.
+        while not stop.is_set():
+            try:
+                await w.login()
+                break
+            except (QuotaExhausted, IdentityUnavailable) as exc:
+                log.warning('Login unavailable (quota); retrying in %ss: %s', QUOTA_COOLDOWN_SECONDS, exc)
+                await pause(QUOTA_COOLDOWN_SECONDS)
+        if stop.is_set():
+            log.info('Session stopped before login completed.')
+            return
         seen, cutoffs, cooldowns = set(), {}, {}
         for server in MESSAGE_SERVERS:
             try:
                 docs, cutoff = await w.recent(server)
             except QuotaExhausted as exc:
-                log.warning('Server quota-exhausted at baseline; skipping: %s', exc)
+                log.warning('Server quota-exhausted at baseline; will retry after cooldown: %s', exc)
                 cooldowns[server] = time.monotonic() + QUOTA_COOLDOWN_SECONDS
                 continue
             seen.update((server, name) for name, _ in docs)
             cutoffs[server] = datetime.fromisoformat(cutoff.replace('Z', '+00:00'))
             log.info('Silent content baseline: server=%s; documents=%s', server, len(docs))
-        if not cutoffs:
-            raise RuntimeError('Every message server is quota-exhausted; try again after the daily reset (midnight Pacific).')
-        log.info('READY: post a fresh @Aegis mention on any message server; sending=%s; maximum replies=1', sending)
-        deadline = time.monotonic() + 600
-        while time.monotonic() < deadline:
-            await asyncio.sleep(POLL_SECONDS)
+        log.info('READY: watching every message server for fresh @Aegis mentions; sending=%s; runs until stopped', sending)
+        slow, last_send = 60.0, 0.0
+        while not stop.is_set():
+            await pause(POLL_SECONDS)
+            if stop.is_set():
+                break
             for server in MESSAGE_SERVERS:
                 if cooldowns.get(server, 0) > time.monotonic():
                     continue
@@ -349,7 +384,7 @@ async def main():
                 if len(docs) == 50:
                     log.warning('Message window full on %s; processing the newest messages only', server)
                 for name, p in reversed(docs):
-                    if (server, name) in seen:
+                    if stop.is_set() or (server, name) in seen:
                         continue
                     seen.add((server, name))
                     stamp = datetime.fromisoformat(p['timestamp'].replace('Z', '+00:00'))
@@ -358,18 +393,31 @@ async def main():
                         continue
                     if not isinstance(content, str) or not re.search(r'(?i)(?<!\w)@aegis\b', content):
                         continue
-                    await asyncio.sleep(max(0, slow - (datetime.now(timezone.utc) - stamp).total_seconds()))
-                    await w.checks()
-                    body = await w.generate(docs, p)
-                    if body is None:
-                        log.info('Model selected silence; stopping one-attempt test')
-                        return
-                    if sending:
-                        await w.send(server, name, p, body)
-                    else:
-                        log.info('Valid response generated; dry run, no write')
-                    return
-        log.info('Test window ended without an eligible reply. No messages sent.')
+                    try:
+                        # Respect slowmode both from the mention's age and between the bot's own replies.
+                        age_wait = max(0.0, slow - (datetime.now(timezone.utc) - stamp).total_seconds())
+                        send_wait = max(0.0, slow - (time.monotonic() - last_send)) if last_send else 0.0
+                        await pause(max(age_wait, send_wait))
+                        if stop.is_set():
+                            break
+                        _, _, slow = await w.checks()
+                        body = await w.generate(docs, p)
+                        if body is None:
+                            log.info('Model stayed silent for a mention on %s', server)
+                            continue
+                        if sending:
+                            await w.send(server, name, p, body)
+                            last_send = time.monotonic()
+                            log.info('Reply sent on %s; continuing to watch.', server)
+                        else:
+                            log.info('Dry run: would reply on %s: %s', server, body[:120])
+                    except Exception as exc:
+                        # Un-mark the mention so it is retried after the cooldown.
+                        seen.discard((server, name))
+                        cooldowns[server] = time.monotonic() + QUOTA_COOLDOWN_SECONDS
+                        log.warning('Mention on %s deferred (%s); will retry after cooldown: %s', server, type(exc).__name__, exc)
+                        break
+        log.info('Session stopped; no further replies.')
 
 
 if __name__ == '__main__':

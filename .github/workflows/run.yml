@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       send_enabled:
-        description: 'Allow ONE reply to a fresh @Aegis mention on any message server'
+        description: 'Reply to fresh @Aegis mentions (unchecked = dry run, no sends)'
         type: boolean
         default: true
         required: true
@@ -19,7 +19,9 @@ concurrency:
 jobs:
   controlled-reply-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # GitHub kills hosted jobs after 6 hours; the session runs until you
+    # cancel it, the timeout hits, or you stop it another way.
+    timeout-minutes: 360
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -33,7 +35,7 @@ jobs:
         run: |
           python -m py_compile firestore_worker.py
           python -m unittest -v test_firestore_worker.py
-      - name: Read and optionally send one Server 3 reply
+      - name: Watch for @Aegis mentions and reply until stopped
         env:
           PYTHONUNBUFFERED: '1'
           SEND_ENABLED: ${{ inputs.send_enabled }}
